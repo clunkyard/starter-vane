@@ -1,0 +1,125 @@
+# A starter robot for rules v2: sweep a medium scan to find a robot, narrow
+# it to hold the robot, pick shot power by range, and fire only when the
+# turret is on target and the battery can spare it. With nothing in the
+# scan, follow a passive cue; step out of the storm. Each control comes
+# from the highest-priority rule whose condition holds.
+#
+# The trade-offs:
+#   scan     a narrow arc reaches further; a wide one finds robots nearby
+#   power    heavy shots hit harder for less battery, but fly slowly
+#   battery  shots and driving share it, and it refills slowly
+#   turret   it turns at a limited rate; aim is where it points now
+# Values: ruleset physics-mode zero-g control-model inertial mode3 tick
+#   time remaining width height depth gravity-x gravity-y gravity-z
+#   terrain-kind hills health x y z vx vy vz heading pitch yaw-rate
+#   pitch-rate roll-rate forward-x forward-y forward-z right-x right-y
+#   right-z up-x up-y up-z grounded altitude battery battery-capacity aim
+#   aim-pitch cooldown scan-heading scan-pitch scan-arc scan-range contact
+#   range bearing elevation cue-present cue-error bearing-rate zone-active
+#   zone-radius storm-active storm-radius hill-active hill-radius score
+#   score-best speed gravity terrain-height battery-fraction aim-error
+#   power-min power-max shot-speed-base shot-speed-per-power
+#   shot-cost-base shot-cost-per-power zone-distance zone-bearing
+#   zone-elevation storm-distance storm-bearing storm-heading cue-muzzle
+#   cue-bearing cue-elevation cue-range cue-age pickup-present
+#   pickup-bearing pickup-elevation pickup-range on-hill hill-held
+#   hill-bearing hill-elevation hill-range hill-time hill-to-win
+# Older names: energy (battery) max-energy (battery-capacity)
+#   energy-fraction (battery-fraction) fire-base (shot-cost-base)
+#   fire-per-power (shot-cost-per-power)
+# cue-* is the most accurate passive contact, kept 60 ticks: where to
+# look, not where to shoot. A distance to something absent reads 1e12.
+# Controls: drive turn pitch thrust strafe lift yaw-torque pitch-torque
+#   roll-torque brake aim-heading aim-pitch fire power scan-heading
+#   scan-arc scan-pitch status-text status-value (not in the -wasm builds)
+# Functions: min max abs clamp(x, low, high) sin cos wave(period, amplitude)
+#   sweep(degreesPerTick) angle(target, current) atan2(y, x) (degrees)
+# Manual: https://clunkyard.com/manual#dsl
+bot My robot
+modes 2d 3d
+rulesets classic inertial-2d gravity-flat gravity-hills zero-g
+
+# Sudden death: head back inside the safe zone before anything else. The
+# turret keeps tracking and firing from the rules below.
+rule home priority 300 when zone-active and zone-distance > zone-radius - 60
+  turn clamp(angle(zone-bearing, heading) / 30, -1, 1)
+  pitch clamp((zone-elevation - pitch) / 30, -1, 1)
+  drive 0.8
+  yaw-torque clamp(angle(zone-bearing, heading) / 70 - yaw-rate / 60, -1, 1)
+  thrust 0.6
+  lift clamp(-gravity-z / 100 + gravity * (60 - altitude) / 100 + sin(zone-elevation) - vz / 50, -1, 1)
+end
+
+# The storm drifts across the arena and hurts anything inside it. Near its
+# edge, step out across its path: at right angles to its drift, on the side
+# this robot is already on, so the storm passes by. When its centre lies to
+# the left of its drift (angle(...) > 0 is 1), this robot is on the right of
+# its path, so the way out is storm-heading - 90; otherwise it is + 90.
+rule storm priority 250 when storm-distance < 60
+  turn clamp(angle(storm-heading + 90 - 180 * (angle(storm-bearing, storm-heading) > 0), heading) / 30, -1, 1)
+  pitch clamp(-pitch / 45, -1, 1)
+  drive 1
+  yaw-torque clamp(angle(storm-heading + 90 - 180 * (angle(storm-bearing, storm-heading) > 0), heading) / 70 - yaw-rate / 60, -1, 1)
+  thrust 0.8
+end
+
+# Force rulesets (everything but classic) push the hull instead of steering
+# it, so this rule claims the force controls first. It hovers about 60 above
+# the ground, keeps the hull level, damps spin and slows down near a target.
+# It does not strafe: aim spread grows with the robot's own speed. Under a
+# quarter battery it pushes half as hard.
+rule fly priority 200 when physics-mode
+  lift clamp(-gravity-z / 100 + gravity * (60 - altitude) / 100 - vz / 50, -1, 1)
+  pitch-torque clamp(-pitch / 40 - pitch-rate / 60, -1, 1)
+  roll-torque clamp(-roll-rate / 60, -1, 1)
+  # With no contact, turn toward a cue, or keep turning to search.
+  yaw-torque clamp(angle(bearing, heading) / 70 + (not contact) * (cue-present * angle(cue-bearing, heading) / 70 + 0.2 * (not cue-present)) - yaw-rate / 60, -1, 1)
+  thrust clamp((range - 200) / 180, -0.5, 0.6) * (1 - 0.5 * (battery-fraction < 0.25))
+  brake speed > 70
+end
+
+rule track priority 100 when contact
+  # Circle the target instead of driving straight at it: a robot crossing
+  # the line of fire is harder to hit. Driving costs battery, so go gently,
+  # and at half speed under a quarter battery.
+  turn clamp(angle(bearing + 90 + wave(50, 30), heading) / 45, -1, 1)
+  pitch clamp(-pitch / 45, -1, 1)
+  drive 0.5 - 0.25 * (battery-fraction < 0.25)
+  aim-heading bearing
+  # Under gravity a shot drops on the way; it takes about a second, so aim
+  # higher by about half the gravity over the range (in degrees).
+  aim-pitch elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max)
+  scan-heading bearing
+  scan-pitch elevation
+  # Narrow: holds the contact and reaches about 735.
+  scan-arc 20
+  # The heaviest shot that still reaches the target in about one second:
+  # shot speed is shot-speed-base + shot-speed-per-power * power.
+  power clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max)
+  # Fire once the turret has slewed onto the target, keeping 10 in the
+  # battery after paying for the shot.
+  fire cooldown == 0 and abs(aim-error) < 3 and abs(elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max) - aim-pitch) < 3 and battery >= shot-cost-base + shot-cost-per-power * clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max) + 10
+end
+
+# A passive cue says roughly where a robot is, within cue-error degrees:
+# head that way and sweep a narrow scan across it. It reaches further than
+# the medium scan, and the cue is no firing solution.
+rule listen priority 20 when cue-present and not contact
+  drive 0.6 - 0.3 * (battery-fraction < 0.25)
+  turn clamp(angle(cue-bearing, heading) / 45, -1, 1)
+  pitch clamp(-pitch / 45, -1, 1)
+  scan-heading cue-bearing + wave(14, cue-error + 10)
+  scan-pitch cue-elevation
+  scan-arc 30
+end
+
+rule search priority 10 when true
+  drive 0.6 - 0.3 * (battery-fraction < 0.25)
+  turn 0.25
+  pitch clamp(-pitch / 45, -1, 1)
+  # Medium: sweeps the circle in half a second, reaching about 520.
+  scan-heading scan-heading + 36
+  # Nod the scanner up and down to find 3D targets above or below.
+  scan-pitch wave(31, 25)
+  scan-arc 40
+end
