@@ -1,11 +1,12 @@
 # A starter robot for rules v2: sweep a medium scan to find a robot, narrow
 # it to hold the robot, pick shot power by range, and fire only when the
-# turret is on target and the battery can spare it. With nothing in the
+# bearing is precise, the turret is on target and the battery can spare it. With nothing in the
 # scan, follow a passive cue; step out of the storm. Each control comes
 # from the highest-priority rule whose condition holds.
 #
 # The trade-offs:
-#   scan     a narrow arc reaches further; a wide one finds robots nearby
+#   scan     a narrow arc reaches further and places a robot precisely; a
+#            wide one finds robots nearby
 #   power    heavy shots hit harder for less battery, but fly slowly
 #   battery  shots and driving share it, and it refills slowly
 #   turret   it turns at a limited rate; aim is where it points now
@@ -24,6 +25,7 @@
 #   cue-bearing cue-elevation cue-range cue-age pickup-present
 #   pickup-bearing pickup-elevation pickup-range on-hill hill-held
 #   hill-bearing hill-elevation hill-range hill-time hill-to-win
+#   bearing-error range-error target-vx target-vy target-vz muzzle-heard
 # Older names: energy (battery) max-energy (battery-capacity)
 #   energy-fraction (battery-fraction) fire-base (shot-cost-base)
 #   fire-per-power (shot-cost-per-power)
@@ -63,17 +65,18 @@ rule storm priority 250 when storm-distance < 60
   thrust 0.8
 end
 
-# A simple dodge: vary it, or predict the shooter. A muzzle cue means a
+# A simple dodge: vary it, or predict the shooter. A shot heard means a
 # robot fired; for half a second swerve off the line of fire, left when it
 # was heard on an odd tick and right on an even one (Vane keeps no counter):
-# turn at full drive, or strafe at half thrust under forces. This rule
-# claims only the hull, so the turret keeps tracking and firing from the
-# rules below.
-rule dodge priority 225 when cue-muzzle and cue-age < 10
+# turn at full drive, or strafe at half thrust under forces. muzzle-heard
+# hears a shot on its tick whatever the best cue is; while the shot is the
+# remembered cue, cue-age counts the ticks since. This rule claims only the
+# hull, so the turret keeps tracking and firing from the rules below.
+rule dodge priority 225 when muzzle-heard or (cue-muzzle and cue-age < 10)
   drive 1 - 0.5 * (battery-fraction < 0.25)
-  turn 1 - 2 * ((tick - cue-age) % 2 == 0)
+  turn 1 - 2 * ((tick - cue-age * (not muzzle-heard)) % 2 == 0)
   thrust 0.5 - 0.25 * (battery-fraction < 0.25)
-  strafe 2 * ((tick - cue-age) % 2 == 0) - 1
+  strafe 2 * ((tick - cue-age * (not muzzle-heard)) % 2 == 0) - 1
 end
 
 # Force rulesets (everything but classic) push the hull instead of steering
@@ -104,14 +107,20 @@ rule track priority 100 when contact
   aim-pitch elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max)
   scan-heading bearing
   scan-pitch elevation
-  # Narrow: holds the contact and reaches about 735.
-  scan-arc 20
+  # Bearing is earned: one reading is off by about bearing-error degrees, a
+  # fixed share of the arc. Halve the beam each tick until it is about 60
+  # units across at the target, and at least 6 degrees: narrow enough for a
+  # precise bearing, wide enough to keep the target in it. In a crowd a
+  # narrow beam sees one robot, so every 40 ticks widen it to 40 for a
+  # tick: a nearer robot it finds becomes the target.
+  scan-arc 40 * (tick % 40 == 0) + (tick % 40 != 0) * min(40, max(6, 2 * atan2(30, range), scan-arc / 2))
   # The heaviest shot that still reaches the target in about one second:
   # shot speed is shot-speed-base + shot-speed-per-power * power.
   power clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max)
-  # Fire once the turret has slewed onto the target, keeping 10 in the
-  # battery after paying for the shot.
-  fire cooldown == 0 and abs(aim-error) < 3 and abs(elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max) - aim-pitch) < 3 and battery >= shot-cost-base + shot-cost-per-power * clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max) + 10
+  # Fire once the turret has slewed onto the target and one reading places
+  # it within 12 units across the line of sight (range * bearing-error in
+  # radians), keeping 10 in the battery after paying for the shot.
+  fire cooldown == 0 and abs(aim-error) < 3 and range * bearing-error / 57.3 < 12 and abs(elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max) - aim-pitch) < 3 and battery >= shot-cost-base + shot-cost-per-power * clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max) + 10
 end
 
 # A passive cue says roughly where a robot is, within cue-error degrees:
