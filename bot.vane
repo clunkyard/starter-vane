@@ -63,6 +63,19 @@ rule storm priority 250 when storm-distance < 60
   thrust 0.8
 end
 
+# A simple dodge: vary it, or predict the shooter. A muzzle cue means a
+# robot fired; for half a second swerve off the line of fire, left when it
+# was heard on an odd tick and right on an even one (Vane keeps no counter):
+# turn at full drive, or strafe at half thrust under forces. This rule
+# claims only the hull, so the turret keeps tracking and firing from the
+# rules below.
+rule dodge priority 225 when cue-muzzle and cue-age < 10
+  drive 1 - 0.5 * (battery-fraction < 0.25)
+  turn 1 - 2 * ((tick - cue-age) % 2 == 0)
+  thrust 0.5 - 0.25 * (battery-fraction < 0.25)
+  strafe 2 * ((tick - cue-age) % 2 == 0) - 1
+end
+
 # Force rulesets (everything but classic) push the hull instead of steering
 # it, so this rule claims the force controls first. It hovers about 60 above
 # the ground, keeps the hull level, damps spin and slows down near a target.
