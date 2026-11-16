@@ -10,33 +10,7 @@
 #   power    heavy shots hit harder for less battery, but fly slowly
 #   battery  shots and driving share it, and it refills slowly
 #   turret   it turns at a limited rate; aim is where it points now
-# Values: ruleset physics-mode zero-g control-model inertial mode3 tick
-#   time remaining width height depth gravity-x gravity-y gravity-z
-#   terrain-kind hills health x y z vx vy vz heading pitch yaw-rate
-#   pitch-rate roll-rate forward-x forward-y forward-z right-x right-y
-#   right-z up-x up-y up-z grounded altitude battery battery-capacity aim
-#   aim-pitch cooldown scan-heading scan-pitch scan-arc scan-range contact
-#   range bearing elevation cue-present cue-error bearing-rate zone-active
-#   zone-radius storm-active storm-radius hill-active hill-radius score
-#   score-best speed gravity terrain-height battery-fraction aim-error
-#   power-min power-max shot-speed-base shot-speed-per-power
-#   shot-cost-base shot-cost-per-power zone-distance zone-bearing
-#   zone-elevation storm-distance storm-bearing storm-heading cue-muzzle
-#   cue-bearing cue-elevation cue-range cue-age pickup-present
-#   pickup-bearing pickup-elevation pickup-range on-hill hill-held
-#   hill-bearing hill-elevation hill-range hill-time hill-to-win
-#   bearing-error range-error target-vx target-vy target-vz muzzle-heard
-# Older names: energy (battery) max-energy (battery-capacity)
-#   energy-fraction (battery-fraction) fire-base (shot-cost-base)
-#   fire-per-power (shot-cost-per-power)
-# cue-* is the most accurate passive contact, kept 60 ticks: where to
-# look, not where to shoot. A distance to something absent reads 1e12.
-# Controls: drive turn pitch thrust strafe lift yaw-torque pitch-torque
-#   roll-torque brake aim-heading aim-pitch fire power scan-heading
-#   scan-arc scan-pitch status-text status-value (not in the -wasm builds)
-# Functions: min max abs clamp(x, low, high) sin cos wave(period, amplitude)
-#   sweep(degreesPerTick) angle(target, current) atan2(y, x) (degrees)
-# Manual: https://clunkyard.com/manual#dsl
+# Names for values, controls and functions: https://clunkyard.com/manual#dsl
 bot My robot
 modes 2d 3d
 rulesets classic inertial-2d gravity-flat gravity-hills zero-g
