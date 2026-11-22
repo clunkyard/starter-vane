@@ -1,22 +1,17 @@
-# A starter robot for rules v2: sweep a medium scan to find a robot, narrow
-# it to hold the robot, pick shot power by range, and fire only when the
-# bearing is precise, the turret is on target and the battery can spare it. With nothing in the
-# scan, follow a passive cue; step out of the storm. Each control comes
-# from the highest-priority rule whose condition holds.
-#
-# The trade-offs:
-#   scan     a narrow arc reaches further and places a robot precisely; a
-#            wide one finds robots nearby
-#   power    heavy shots hit harder for less battery, but fly slowly
-#   battery  shots and driving share it, and it refills slowly
-#   turret   it turns at a limited rate; aim is where it points now
-# Names for values, controls and functions: https://clunkyard.com/manual#dsl
+# Higher-priority rules take over one control at a time.
+# Clunkyard guide: https://clunkyard.com/sdk/vane
 bot My robot
 modes 2d 3d
 rulesets classic inertial-2d gravity-flat gravity-hills zero-g
 
-# Sudden death: head back inside the safe zone before anything else. The
-# turret keeps tracking and firing from the rules below.
+# Power and elevation for a shot that travels for about one second.
+let shot-power = clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max)
+let shot-elevation = elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max)
+
+# Leave the storm at right angles to its drift, on our side of its path.
+let exit-heading = storm-heading + 90 - 180 * (angle(storm-bearing, storm-heading) > 0)
+
+# Return to the safe zone while letting the turret track.
 rule home priority 300 when zone-active and zone-distance > zone-radius - 60
   turn clamp(angle(zone-bearing, heading) / 30, -1, 1)
   pitch clamp((zone-elevation - pitch) / 30, -1, 1)
@@ -26,26 +21,16 @@ rule home priority 300 when zone-active and zone-distance > zone-radius - 60
   lift clamp(-gravity-z / 100 + gravity * (60 - altitude) / 100 + sin(zone-elevation) - vz / 50, -1, 1)
 end
 
-# The storm drifts across the arena and hurts anything inside it. Near its
-# edge, step out across its path: at right angles to its drift, on the side
-# this robot is already on, so the storm passes by. When its centre lies to
-# the left of its drift (angle(...) > 0 is 1), this robot is on the right of
-# its path, so the way out is storm-heading - 90; otherwise it is + 90.
+# Turn across the storm's path while the turret tracks.
 rule storm priority 250 when storm-distance < 60
-  turn clamp(angle(storm-heading + 90 - 180 * (angle(storm-bearing, storm-heading) > 0), heading) / 30, -1, 1)
+  turn clamp(angle(exit-heading, heading) / 30, -1, 1)
   pitch clamp(-pitch / 45, -1, 1)
   drive 1
-  yaw-torque clamp(angle(storm-heading + 90 - 180 * (angle(storm-bearing, storm-heading) > 0), heading) / 70 - yaw-rate / 60, -1, 1)
+  yaw-torque clamp(angle(exit-heading, heading) / 70 - yaw-rate / 60, -1, 1)
   thrust 0.8
 end
 
-# A simple dodge: vary it, or predict the shooter. A shot heard means a
-# robot fired; for half a second swerve off the line of fire, left when it
-# was heard on an odd tick and right on an even one (Vane keeps no counter):
-# turn at full drive, or strafe at half thrust under forces. muzzle-heard
-# hears a shot on its tick whatever the best cue is; while the shot is the
-# remembered cue, cue-age counts the ticks since. This rule claims only the
-# hull, so the turret keeps tracking and firing from the rules below.
+# Swerve for half a second after hearing a shot. The cue age remembers when it was heard.
 rule dodge priority 225 when muzzle-heard or (cue-muzzle and cue-age < 10)
   drive 1 - 0.5 * (battery-fraction < 0.25)
   turn 1 - 2 * ((tick - cue-age * (not muzzle-heard)) % 2 == 0)
@@ -53,11 +38,7 @@ rule dodge priority 225 when muzzle-heard or (cue-muzzle and cue-age < 10)
   strafe 2 * ((tick - cue-age * (not muzzle-heard)) % 2 == 0) - 1
 end
 
-# Force rulesets (everything but classic) push the hull instead of steering
-# it, so this rule claims the force controls first. It hovers about 60 above
-# the ground, keeps the hull level, damps spin and slows down near a target.
-# It does not strafe: aim spread grows with the robot's own speed. Under a
-# quarter battery it pushes half as hard.
+# In force-based matches, hover at 60 units and damp the hull's spin.
 rule fly priority 200 when physics-mode
   lift clamp(-gravity-z / 100 + gravity * (60 - altitude) / 100 - vz / 50, -1, 1)
   pitch-torque clamp(-pitch / 40 - pitch-rate / 60, -1, 1)
@@ -69,37 +50,24 @@ rule fly priority 200 when physics-mode
 end
 
 rule track priority 100 when contact
-  # Circle the target instead of driving straight at it: a robot crossing
-  # the line of fire is harder to hit. Driving costs battery, so go gently,
-  # and at half speed under a quarter battery.
+  # Circle the target to keep moving across its line of fire.
   turn clamp(angle(bearing + 90 + wave(50, 30), heading) / 45, -1, 1)
   pitch clamp(-pitch / 45, -1, 1)
   drive 0.5 - 0.25 * (battery-fraction < 0.25)
   aim-heading bearing
-  # Under gravity a shot drops on the way; it takes about a second, so aim
-  # higher by about half the gravity over the range (in degrees).
-  aim-pitch elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max)
+  # Aim higher to account for gravity.
+  aim-pitch shot-elevation
   scan-heading bearing
   scan-pitch elevation
-  # Bearing is earned: one reading is off by about bearing-error degrees, a
-  # fixed share of the arc. Halve the beam each tick until it is about 60
-  # units across at the target, and at least 6 degrees: narrow enough for a
-  # precise bearing, wide enough to keep the target in it. In a crowd a
-  # narrow beam sees one robot, so every 40 ticks widen it to 40 for a
-  # tick: a nearer robot it finds becomes the target.
+  # Narrow the beam for a better bearing. Widen it every 40 ticks to look for closer robots.
   scan-arc 40 * (tick % 40 == 0) + (tick % 40 != 0) * min(40, max(6, 2 * atan2(30, range), scan-arc / 2))
-  # The heaviest shot that still reaches the target in about one second:
-  # shot speed is shot-speed-base + shot-speed-per-power * power.
-  power clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max)
-  # Fire once the turret has slewed onto the target and one reading places
-  # it within 12 units across the line of sight (range * bearing-error in
-  # radians), keeping 10 in the battery after paying for the shot.
-  fire cooldown == 0 and abs(aim-error) < 3 and range * bearing-error / 57.3 < 12 and abs(elevation - gravity-z * 28.6 / max(range, shot-speed-base + shot-speed-per-power * power-max) - aim-pitch) < 3 and battery >= shot-cost-base + shot-cost-per-power * clamp((range - shot-speed-base) / shot-speed-per-power, power-min, power-max) + 10
+  # Choose the heaviest shot that can travel the range in about one second.
+  power shot-power
+  # Wait for the turret and a precise bearing, then leave 10 battery in reserve.
+  fire cooldown == 0 and abs(aim-error) < 3 and range * bearing-error / 57.3 < 12 and abs(shot-elevation - aim-pitch) < 3 and battery >= shot-cost-base + shot-cost-per-power * shot-power + 10
 end
 
-# A passive cue says roughly where a robot is, within cue-error degrees:
-# head that way and sweep a narrow scan across it. It reaches further than
-# the medium scan, and the cue is no firing solution.
+# Use a passive cue to aim the scanner.
 rule listen priority 20 when cue-present and not contact
   drive 0.6 - 0.3 * (battery-fraction < 0.25)
   turn clamp(angle(cue-bearing, heading) / 45, -1, 1)
@@ -113,7 +81,7 @@ rule search priority 10 when true
   drive 0.6 - 0.3 * (battery-fraction < 0.25)
   turn 0.25
   pitch clamp(-pitch / 45, -1, 1)
-  # Medium: sweeps the circle in half a second, reaching about 520.
+  # Sweep a medium-width beam past every heading in ten ticks.
   scan-heading scan-heading + 36
   # Nod the scanner up and down to find 3D targets above or below.
   scan-pitch wave(31, 25)
